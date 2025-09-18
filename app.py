@@ -3,14 +3,16 @@ import pandas as pd
 import joblib
 import numpy as np
 import requests
-import streamlit.components.v1 as components # <-- ADD THIS IMPORT
+import streamlit.components.v1 as components
 
 # --- 1. Page Configuration ---
 st.set_page_config(page_title="Lumina AI - Lead Scorer", page_icon="💡", layout="wide")
 
+
 # --- 2. Load Your Assets ---
 @st.cache_data
 def load_assets():
+    """Loads all necessary assets for the app."""
     try:
         model = joblib.load('lead_scorer_model.pkl')
         new_leads_df = pd.read_csv('crm_data.csv')
@@ -41,8 +43,8 @@ def load_assets():
 
 model, new_leads_df, new_leads_with_features = load_assets()
 
-# --- 3. Action Agent Functions ---
 
+# --- 3. Action Agent Functions ---
 def trigger_email_agent(lead_data):
     webhook_url = "https://hook.us2.make.com/63rvb0ygib3l6znetiob2jufpu9337yt" # <-- MAKE SURE THIS IS YOUR URL
     payload = {
@@ -57,20 +59,16 @@ def trigger_email_agent(lead_data):
         st.toast(f"❌ Connection error: {e}")
 
 def generate_vapi_call_button(lead_data, index):
-    """Generates the HTML/JS for an embedded Vapi web call button with a unique ID."""
-    # !!! IMPORTANT: PASTE YOUR VAPI ASSISTANT ID AND PUBLIC KEY HERE !!!
     vapi_assistant_id = "c2388756-391a-401f-9457-d144d8f1f3ea" 
     vapi_public_key = "6c555660-87b3-421a-b9a1-d59b899798ab"
-    
-    # We use the index to create a unique function name for each button
+    lead_first_name = lead_data['lead_name'].split()[0]
     html_code = f"""
         <script src="https://cdn.vapi.ai/sip.js"></script>
         <script>
             function makeCall_{index}() {{
                 const vapi = new Vapi('{vapi_public_key}');
-                // We pass lead name as a variable to the Vapi assistant
                 vapi.start('{vapi_assistant_id}', {{ 
-                    variables: {{ lead_name: "{lead_data['lead_name'].split()[0]}" }} 
+                    variables: {{ lead_name: "{lead_first_name}" }} 
                 }});
             }}
         </script>
@@ -78,7 +76,7 @@ def generate_vapi_call_button(lead_data, index):
     """
     return html_code
 
-# --- 4. The User Interface (UI) ---
+# --- 4. Main App UI ---
 st.title("💡 Lumina AI - Predictive Lead Prioritization")
 st.subheader("Welcome, Sales Manager Priya!")
 st.write("This dashboard analyzes incoming website leads to prioritize the hottest prospects. Use the Action Agents to engage with them instantly.")
@@ -97,39 +95,52 @@ if model is not None and new_leads_with_features is not None:
     results_df['Lumina_Score'] = np.round(predicted_probabilities * 100).astype(int)
     
     def get_next_action(score):
-        if score > 85: return "🔥 Immediate Call"
-        elif score > 60: return "✉️ Send Brochure"
-        elif score > 40: return "📈 Add to Nurture"
+        if score >= 85: return "🔥 Immediate Call"
+        elif score >= 70: return "✉️ Send Brochure" # Adjusted threshold for more variety
+        elif score >= 40: return "📈 Add to Nurture"
         else: return "🗑️ Monitor"
             
     results_df['Next_Best_Action'] = results_df['Lumina_Score'].apply(get_next_action)
-    sorted_df = results_df.sort_values(by='Lumina_Score', ascending=False).reset_index(drop=True)
     
+    display_columns = [
+        'lead_name', 'Lumina_Score', 'Next_Best_Action',
+        'lead_source', 'lead_phone', 'lead_email'
+    ]
+    sorted_df = results_df[display_columns].sort_values(by='Lumina_Score', ascending=False).reset_index(drop=True)
+    
+    # --- 5. Display the Original, Clean Dashboard ---
     st.subheader("Prioritized Lead List")
-
-    col_headers = st.columns([2, 1, 2, 2])
-    col_headers[0].write("**Lead Name**")
-    col_headers[1].write("**Lumina Score**")
-    col_headers[2].write("**Next Best Action**")
-    col_headers[3].write("**Trigger Action Agent**")
+    st.dataframe(sorted_df)
+    st.success(f"Successfully scored {len(sorted_df)} new leads.")
     st.markdown("---")
+    
+    # --- 6. ADD THE INTERACTIVE ACTION HUB ---
+    st.subheader("⚡ Action Hub")
+    st.write("Select a high-priority lead from the list above to trigger an Action Agent.")
 
-    for index, lead in sorted_df.head(10).iterrows():
-        col1, col2, col3, col4 = st.columns([2, 1, 2, 2])
+    # We will only show the top leads in the dropdown for actionability
+    actionable_leads = sorted_df[sorted_df['Lumina_Score'] >= 70]
+    lead_options = actionable_leads['lead_name'].tolist()
+
+    if lead_options:
+        selected_lead_name = st.selectbox("Select a High-Priority Lead:", options=lead_options)
         
-        with col1: st.write(lead['lead_name'])
-        with col2: st.write(f"**{lead['Lumina_Score']}**")
-        with col3: st.write(lead['Next_Best_Action'])
-        with col4:
-            # --- THIS IS THE NEW CONDITIONAL LOGIC ---
-            action = lead['Next_Best_Action']
-            
-            if "Call" in action:
-                call_button_html = generate_vapi_call_button(lead, index)
-                components.html(call_button_html, height=40)
-            elif "Brochure" in action:
-                if st.button("✉️ Send Email & Brochure", key=f"email_{index}"):
-                    trigger_email_agent(lead)
-            else:
-                # For "Nurture" or "Monitor", we can show a disabled-style placeholder
-                st.write("*(No Action Agent)*")
+        # Get all the data for the selected lead
+        selected_lead_data = actionable_leads[actionable_leads['lead_name'] == selected_lead_name].iloc[0]
+        
+        # Display the action for that lead
+        action = selected_lead_data['Next_Best_Action']
+        st.write(f"**Recommended Action:** {action}")
+
+        # --- Display the correct button based on the action ---
+        if "Call" in action:
+            # We use a unique index for the function name
+            unique_index = selected_lead_data.name 
+            call_button_html = generate_vapi_call_button(selected_lead_data, unique_index)
+            components.html(call_button_html, height=40)
+        
+        elif "Brochure" in action:
+            if st.button("✉️ Trigger Email & Brochure Agent"):
+                trigger_email_agent(selected_lead_data)
+    else:
+        st.write("No high-priority leads (score >= 70) to action at this time.")
